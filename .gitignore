@@ -1,0 +1,72 @@
+# Large files and model checkpoints
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.h5
+*.hdf5
+*.onnx
+*.distcp
+
+# Logs
+logs/
+slogs/
+*.log
+wandb/
+tensorboard/
+
+# Data
+*.npy
+*.npz
+*.pkl
+*.pickle
+data/
+datasets/
+Pile_data/
+
+# Megatron data index files
+*.idx
+*_text_document.bin
+*_text_document.idx
+
+# SLURM logs
+*.out
+*.err
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+*.so
+
+# Environment
+.env
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+.github/
+
+# Project-specific: experiment output, scratch, and machine-local scripts
+Evaluation_scripts/
+zero_shot_evaluation/
+Conversion_hf_code/old_ones/
+Conversion_hf_code/convert_to_hf/logs/
+Conversion_hf_code/convert_to_hf/convert.sh
+scripts/dont_push/
+scripts/trial_logs/
+
+# Collaborator-specific environment snapshot
+zoumpu_env.yml
