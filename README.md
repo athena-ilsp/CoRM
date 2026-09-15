@@ -2,6 +2,9 @@
 
 Official implementation of ["Beyond Magnitude: Contrastive Routing for Modular Mixture-of-Experts"](https://arxiv.org/abs/2609.01100).
 
+> [!WARNING]
+> This codebase is currently under development and not yet ready for general use.
+
 ## Abstract
 
 > In current Mixture-of-Experts architectures, routing is performed based on representations dominated by structure shared across all tokens, limiting expert specialization.  We show that contrasting each token against an 
@@ -13,7 +16,6 @@ Exponential Moving Average of the layer's hidden states, rather than routing on 
 </p>  
 
 This codebase builds on [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) and [ReMoE](https://github.com/thu-ml/ReMoE) and supports Data, Tensor, Pipeline, and Expert Parallelism.
-
 
 ## Installation
 
