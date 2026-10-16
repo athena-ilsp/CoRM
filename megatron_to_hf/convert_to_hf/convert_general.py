@@ -6,7 +6,7 @@ from torch.distributed.checkpoint import FileSystemReader
 from safetensors.torch import save_file
 
 # Fill in with the path to your CoRM_model_scripts dir and MoE_model_scripts dir
-# (see Conversion_hf_code/CoRM_model_scripts and Conversion_hf_code/MoE_model_scripts).
+# (see megatron_to_hf/CoRM_model_scripts and megatron_to_hf/MoE_model_scripts).
 CUSTOM_MODEL_FILES_DIR = "CUSTOM_MODEL_FILES_DIR"
 MOE_MODEL_FILES_DIR = "MOE_MODEL_FILES_DIR"
 
@@ -87,11 +87,13 @@ def get_model_config(router_type="corm", **kwargs):
         "num_key_value_heads": 4,
         "intermediate_size": 3072,
 
-        "num_local_experts": 7,  # Will be auto-detected from checkpoint
-        "num_experts_per_tok": 1,
-        "use_dynamic_routing": True,
-        "top_p": 0.4,
-        "expert_attn_size": 32,
+        "num_local_experts": 8,  # Will be auto-detected from checkpoint
+        "num_experts_per_tok": 1,  # Read from checkpoint args (moe_router_topk)
+        # Dynamic top-p routing is NOT implemented in the HF modeling code; the
+        # converter refuses checkpoints trained with it (see main()).
+        "use_dynamic_routing": False,
+        "top_p": 1.0,
+        "expert_attn_size": 64,  # Auto-detected from router key.weight
         "max_position_embeddings": 1024,
         "vocab_size": 51200,
 
@@ -100,17 +102,12 @@ def get_model_config(router_type="corm", **kwargs):
         "routing_temperature_init": 1.0,
 
         "router_type": router_type,
-        "router_background_momentum": 0.01,
+        "router_background_momentum": 0.01,  # Read from checkpoint args (moe_ema_null_momentum)
+        "moe_router_use_l2_normalize": True,
 
-        # Kept for backward compatibility with released config.json files;
-        # inert for the corm router (no shared expert).
-        "moe_weight_schedule_warmup_stage1": 1000,
-        "moe_weight_schedule_warmup_stage2": 10000,
-        "moe_weight_schedule_target_w_shared": 0.8,
-        "moe_weight_schedule_transition_type": "cosine",
-
-        # Output weight configuration
-        "learn_output_weights": True,
+        # The corm router has no shared expert.
+        "has_shared_expert": False,
+        "learn_output_weights": False,
         "fixed_output_weights": False,
 
         "torch_dtype": "bfloat16",
@@ -213,10 +210,6 @@ def main():
                     help="Number of KV heads (auto-detected if not set)")
     ap.add_argument("--topk", type=int, default=None,
                     help="Number of experts per token (auto-detected from checkpoint if not set)")
-    ap.add_argument("--skip-ema-warmup", action="store_true",
-                    help="Skip EMA null state warmup (not recommended for corm)")
-    ap.add_argument("--ema-warmup-batches", type=int, default=200,
-                    help="Number of random-token batches to warm up EMA buffers (default: 200)")
 
     args = ap.parse_args()
 
@@ -343,6 +336,21 @@ def main():
         print(f"  ckpt moe_router_use_l2_normalize={ckpt_use_l2_normalize}")
 
     # Build config with appropriate settings
+    # The QKV shape alone is ambiguous (e.g. H=1024: 16 heads/4 groups and 8 heads/2 groups
+    # give the same rows), so prefer the head counts recorded in the training args.
+    if ckpt_args is not None:
+        if args.num_attention_heads is None and getattr(ckpt_args, "num_attention_heads", None):
+            num_attention_heads = ckpt_args.num_attention_heads
+        if args.num_key_value_heads is None and getattr(ckpt_args, "group_query_attention", False):
+            num_key_value_heads = ckpt_args.num_query_groups
+        print(f"Using attention heads from checkpoint args: num_heads={num_attention_heads}, "
+              f"num_kv_heads={num_key_value_heads}")
+    head_dim = hidden_size // num_attention_heads
+    expected_rows = (num_attention_heads + 2 * num_key_value_heads) * head_dim
+    if expected_rows != qkv_weight.shape[0]:
+        raise ValueError(f"QKV shape {tuple(qkv_weight.shape)} inconsistent with num_heads={num_attention_heads}, "
+                         f"num_kv_heads={num_key_value_heads}")
+
     config_kwargs = {
         "num_local_experts": num_experts,
         "num_experts_per_tok": topk,
@@ -354,8 +362,26 @@ def main():
         "intermediate_size": intermediate_size,
     }
 
-    # The corm router has no shared expert
+    # Shape/numerics that must match training exactly
+    config_kwargs["vocab_size"] = embed_weight.shape[0]
+    if ckpt_args is not None:
+        config_kwargs["rope_theta"] = float(getattr(ckpt_args, "rotary_base", 1000000))
+        config_kwargs["rms_norm_eps"] = float(getattr(ckpt_args, "norm_epsilon", 1e-5))
+        config_kwargs["max_position_embeddings"] = int(getattr(ckpt_args, "max_position_embeddings", 1024))
+
     if args.router_type == "corm":
+        # The HF CoRM implementation only supports fixed top-k routing.
+        if ckpt_args is not None and getattr(ckpt_args, "use_dynamic_routing", False) \
+                and getattr(ckpt_args, "top_p", 1.0) < 1.0:
+            raise ValueError("Checkpoint was trained with dynamic top-p routing, "
+                             "which modeling_corm.py does not implement.")
+        config_kwargs["use_dynamic_routing"] = False
+        config_kwargs["top_p"] = 1.0
+        if ckpt_args is not None:
+            config_kwargs["router_background_momentum"] = float(getattr(
+                ckpt_args, "moe_ema_null_momentum",
+                getattr(ckpt_args, "router_background_momentum", 0.01)))
+        # The corm router has no shared expert
         config_kwargs["has_shared_expert"] = False
         config_kwargs["learn_output_weights"] = False
         config_kwargs["fixed_output_weights"] = False
@@ -463,10 +489,8 @@ def main():
                 if l == 0:
                     print(f"  global_null_mean found in checkpoint (norm={meg[null_key].norm():.4f})")
             else:
-                hf[f"{hp}.moe.router.global_null_mean"] = torch.zeros(H, dtype=torch.bfloat16)
-                hf[f"{hp}.moe.router.ema_initialized"] = torch.tensor(False)
-                if l == 0:
-                    print(f"  WARNING: global_null_mean not in checkpoint — will be zeros. Run warmup_ema.py.")
+                raise KeyError(f"{null_key} not found: the CoRM EMA null state is required for "
+                               f"correct routing and is saved by the CoRM Megatron router.")
 
         # ============================================================
         # Shared expert (corm has none; kept for relu/xmoe compatibility)
@@ -488,17 +512,6 @@ def main():
     # save weights
     save_file({k: v.to(torch.bfloat16) for k, v in hf.items()},
               os.path.join(args.output, "model.safetensors"))
-
-    # ----------------------------------------------------------------
-    # EMA warmup for the corm router's global_null_mean buffer.
-    # The buffer is not saved in Megatron DCP checkpoints, so we
-    # recompute it by running forward passes over random tokens.
-    # ----------------------------------------------------------------
-    null_key_check = "decoder.layers.0.mlp.router.global_null_mean"
-    if args.router_type == "corm" and null_key_check not in meg and not args.skip_ema_warmup:
-        print(f"\nNOTE: global_null_mean not found in checkpoint (old format).")
-        print(f"      Run warmup_ema.py before evaluating:")
-        print(f"      python warmup_ema.py --model-dir {args.output} --batches {args.ema_warmup_batches}")
 
     # copy custom model files
     if args.router_type in ("relu", "xmoe"):

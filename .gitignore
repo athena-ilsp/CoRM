@@ -62,9 +62,9 @@ Thumbs.db
 # Project-specific: experiment output, scratch, and machine-local scripts
 Evaluation_scripts/
 zero_shot_evaluation/
-Conversion_hf_code/old_ones/
-Conversion_hf_code/convert_to_hf/logs/
-Conversion_hf_code/convert_to_hf/convert.sh
+megatron_to_hf/old_ones/
+megatron_to_hf/convert_to_hf/logs/
+megatron_to_hf/convert_to_hf/convert.sh
 scripts/dont_push/
 scripts/trial_logs/
 

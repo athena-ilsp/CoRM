@@ -64,7 +64,7 @@ class CoRM(nn.Module):
     Weights:
         key:              [d2, H]    shared key projection (no bias)
         expert_queries:   [E*d2, H]  per-expert query projection (no bias)
-        global_null_mean: buffer [H] EMA of LN'd hidden states (not saved in DCP → zeros)
+        global_null_mean: buffer [H] EMA of LN'd hidden states (saved in the checkpoint)
         routing_temperature: [1]
     """
 
@@ -87,8 +87,9 @@ class CoRM(nn.Module):
         self.momentum = getattr(config, 'router_background_momentum', 0.01)
         self.use_l2_normalize = getattr(config, 'moe_router_use_l2_normalize', True)
 
+        # Shape [1] to match the Megatron parameter and the saved checkpoints.
         self.routing_temperature = nn.Parameter(
-            torch.tensor(config.routing_temperature_init)
+            torch.full((1,), float(config.routing_temperature_init))
         )
 
     def gating_logits(self, x: torch.Tensor) -> torch.Tensor:

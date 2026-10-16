@@ -20,8 +20,10 @@ class CoRMConfig(PretrainedConfig):
         intermediate_size=3072,
         num_local_experts=8,
         num_experts_per_tok=2,
-        use_dynamic_routing=True,
-        top_p=0.4,
+        # Dynamic top-p routing was not used for the released models and is
+        # not implemented in modeling_corm.py (routing is always fixed top-k).
+        use_dynamic_routing=False,
+        top_p=1.0,
         expert_attn_size=64,
         max_position_embeddings=1024,
         vocab_size=51200,
@@ -34,6 +36,10 @@ class CoRMConfig(PretrainedConfig):
 
         # CoRM router: EMA momentum for the background null state.
         router_background_momentum=0.01,
+
+        # CoRM router: L2-normalize K, Q_real and Q_null before the dot product
+        # (paper setting; matches Megatron's moe_router_use_l2_normalize).
+        moe_router_use_l2_normalize=True,
 
         # Weight-schedule params (inert for the corm router, which has no
         # shared expert; kept for backward compatibility with released
@@ -76,7 +82,7 @@ class CoRMConfig(PretrainedConfig):
         # Shared expert: auto-infer if not explicitly set.
         # (the corm router has no shared expert unless explicitly configured otherwise.)
         if has_shared_expert is None:
-            self.has_shared_expert = True
+            self.has_shared_expert = False
         else:
             self.has_shared_expert = has_shared_expert
 
@@ -84,6 +90,7 @@ class CoRMConfig(PretrainedConfig):
         self.router_type = router_type
 
         self.router_background_momentum = router_background_momentum
+        self.moe_router_use_l2_normalize = moe_router_use_l2_normalize
 
         # Scheduling params
         self.moe_weight_schedule_warmup_stage1 = moe_weight_schedule_warmup_stage1
@@ -98,6 +105,7 @@ class CoRMConfig(PretrainedConfig):
         self.fixed_output_weights = fixed_output_weights
 
         self.torch_dtype = torch_dtype
-        self.tie_word_embeddings = tie_word_embeddings
 
-        super().__init__(**kwargs)
+        # Must be passed to super(): PretrainedConfig.__init__ otherwise resets it
+        # to True, which ties lm_head to embed_tokens and discards the trained lm_head.
+        super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
